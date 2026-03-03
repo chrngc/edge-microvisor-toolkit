@@ -10,6 +10,80 @@
 
 # Ubuntu has actual /bin/sh vs Azure Linux having a sym link to /bin/bash. Force the Make scripts to use /bin/bash
 SHELL=/bin/bash
+.SHELLFLAGS = -eo pipefail -c
+
+# ------------------------------------------------------------------------------
+# systemd memory guard (default: 3GiB)
+# This wraps the top-level make invocation inside a systemd --user scope.
+# When the MemoryMax is exceeded, systemd OOM-kills the entire process tree.
+# ------------------------------------------------------------------------------
+MEM_GUARD ?= 2G
+NOMEMGUARD ?=
+SYSTEMD_RUN := $(shell command -v systemd-run 2>/dev/null || true)
+# Only run the guard once
+ifeq ($(SYSTEMD_MEMGUARD),1)
+GUARD_ACTIVE := 1
+else
+GUARD_ACTIVE :=
+endif
+
+# Re-execute make inside memory-limited scope.
+# Prefer --user scope for a normal user session; if not available (e.g., under sudo),
+# fall back to a system scope when running as root. If neither is possible, skip with a warning.
+define RUN_UNDER_MEMGUARD
+@{ \
+echo "HERROO"; \
+echo $(SYSTEMD_RUN); \
+if [ -z "$(SYSTEMD_RUN)" ]; then \
+	echo "I am 1"; \
+	echo "==> [memguard] WARNING: systemd-run not found; proceeding WITHOUT memory limit."; \
+	exit 0; \
+fi; \
+USER_ID="$$(id -u)"; \
+SCOPE_ARGS="--user --scope"; \
+if [ "$$USER_ID" -eq 0 ]; then \
+	echo "I am 2"; \
+	SCOPE_ARGS="--scope"; \
+else \
+	echo "I am 3"; \
+	if ! systemctl --user show-environment >/dev/null 2>&1; then \
+		echo "==> [memguard] No user systemd session found (no DBus)."; \
+		echo "==> [memguard] TIP: run without sudo, or enable a user session (loginctl enable-linger ${USER})."; \
+		if ! $(SYSTEMD_RUN) --user --scope /bin/true >/dev/null 2>&1; then \
+			echo "==> [memguard] Skipping memory guard (no user systemd bus)."; \
+			exit 0; \
+		fi; \
+	fi; \
+fi; \
+echo "==> [memguard] Using scope: $${SCOPE_ARGS} (MemoryMax=$(MEM_GUARD))"; \
+exec $(SYSTEMD_RUN) $$SCOPE_ARGS \
+	-p MemoryAccounting=yes \
+	-p TasksAccounting=yes \
+	-p KillMode=control-group \
+	-p MemoryMax=$(MEM_GUARD) \
+	--working-directory="$(CURDIR)" \
+	/bin/bash -lc "SYSTEMD_MEMGUARD=1 $(MAKE) $(MAKECMDGOALS)"; \
+}
+endef
+.PHONY: __memguard_enter
+
+# --- Hook memguard before any requested goals and also before default goal ---
+# (This is what was missing; without it, __memguard_enter never runs.)
+$(MAKECMDGOALS): | __memguard_enter
+ifeq ($(strip $(MAKECMDGOALS)),)
+$(.DEFAULT_GOAL): | __memguard_enter
+endif
+
+# Hook: always the first thing make runs
+__memguard_enter:
+
+ifneq ($(GUARD_ACTIVE),1)
+	@echo "ATTENTIONNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"
+	@echo "==> [memguard] Launching under systemd-run (MemoryMax=$(MEM_GUARD))"
+	@$(call RUN_UNDER_MEMGUARD)
+	@exit $$?
+endif
+
 
 toolkit_root := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SCRIPTS_DIR  ?= $(toolkit_root)/scripts
