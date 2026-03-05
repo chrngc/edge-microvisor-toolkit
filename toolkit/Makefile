@@ -17,7 +17,7 @@ SHELL=/bin/bash
 # This wraps the top-level make invocation inside a systemd --user scope.
 # When the MemoryMax is exceeded, systemd OOM-kills the entire process tree.
 # ------------------------------------------------------------------------------
-MEM_GUARD ?= 2G
+MEM_GUARD ?= 6G
 NOMEMGUARD ?=
 SYSTEMD_RUN := $(shell command -v systemd-run 2>/dev/null || true)
 # Only run the guard once
