@@ -17,7 +17,7 @@ SHELL=/bin/bash
 # This wraps the top-level make invocation inside a systemd --user scope.
 # When the MemoryMax is exceeded, systemd OOM-kills the entire process tree.
 # ------------------------------------------------------------------------------
-MEM_GUARD ?= 6G
+MEM_GUARD ?= 
 NOMEMGUARD ?=
 SYSTEMD_RUN := $(shell command -v systemd-run 2>/dev/null || true)
 # Only run the guard once
@@ -55,15 +55,50 @@ else \
 		fi; \
 	fi; \
 fi; \
-echo "==> [memguard] Using scope: $${SCOPE_ARGS} (MemoryMax=$(MEM_GUARD))"; \
+
+# ---- dynamic limit: MemAvailable - 2GiB (floor 512MiB) unless MEM_GUARD is preset ----
+if [ -n "$(MEM_GUARD)" ]; then \
+        LIMIT_STR="$(MEM_GUARD)"; \
+        echo "==> [memguard] Using user-specified MemoryMax=$(MEM_GUARD)"; \
+else \
+        AVAIL_BYTES="$$(awk '/MemAvailable:/ {print $$2*1024}' /proc/meminfo 2>/dev/null || echo 0)"; \
+        TWO_GB="$$((2*1024*1024*1024))"; \
+        FLOOR="$$((3*1024*1024*1024))"; \
+        LIMIT_BYTES="$$((AVAIL_BYTES - TWO_GB))"; \
+        if [ "$$LIMIT_BYTES" -lt "$$FLOOR" ]; then LIMIT_BYTES="$$FLOOR"; fi; \
+        LIMIT_STR="$$LIMIT_BYTES"; \
+        echo "==> [memguard] Computed MemoryMax=$$LIMIT_STR bytes (MemAvailable=$$AVAIL_BYTES bytes - 2GiB, floor 3GiB)"; \
+fi; \
+# Optional: set MemoryHigh slightly below the hard limit (e.g., -256MiB) to induce throttling first
+if echo "$$LIMIT_STR" | grep -Eq '^[0-9]+$$'; then \
+        MH_DELTA="$$((256*1024*1024))"; \
+        MH_VAL="$$((LIMIT_STR > MH_DELTA ? LIMIT_STR - MH_DELTA : LIMIT_STR))"; \
+        MEMORY_HIGH_ARG="-p MemoryHigh=$$MH_VAL"; \
+else \
+        # If LIMIT_STR has a unit (e.g., 6G), let MemoryHigh = MemoryMax
+        MEMORY_HIGH_ARG="-p MemoryHigh=$$LIMIT_STR"; \
+fi; \
+echo "==> [memguard] Using scope: $${SCOPE_ARGS} (MemoryMax=$$LIMIT_STR)"; \
 exec $(SYSTEMD_RUN) $$SCOPE_ARGS \
-	-p MemoryAccounting=yes \
-	-p TasksAccounting=yes \
-	-p KillMode=control-group \
-	-p MemoryMax=$(MEM_GUARD) \
-	--working-directory="$(CURDIR)" \
-	/bin/bash -lc "SYSTEMD_MEMGUARD=1 $(MAKE) $(MAKECMDGOALS)"; \
+        -p MemoryAccounting=yes \
+        -p TasksAccounting=yes \
+        -p KillMode=control-group \
+        -p MemoryMax=$$LIMIT_STR \
+        $$MEMORY_HIGH_ARG \
+        -p MemorySwapMax=0 \
+        --working-directory="$(CURDIR)" \
+        /bin/bash -lc "SYSTEMD_MEMGUARD=1 $(MAKE) $(MAKECMDGOALS)"; \
 }
+
+#echo "==> [memguard] Using scope: $${SCOPE_ARGS} (MemoryMax=$(MEM_GUARD))"; \
+#exec $(SYSTEMD_RUN) $$SCOPE_ARGS \
+#	-p MemoryAccounting=yes \
+#	-p TasksAccounting=yes \
+#	-p KillMode=control-group \
+#	-p MemoryMax=$(MEM_GUARD) \
+#	--working-directory="$(CURDIR)" \
+#	/bin/bash -lc "SYSTEMD_MEMGUARD=1 $(MAKE) $(MAKECMDGOALS)"; \
+#}
 endef
 .PHONY: __memguard_enter
 
