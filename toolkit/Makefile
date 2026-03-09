@@ -17,7 +17,7 @@ SHELL=/bin/bash
 # This wraps the top-level make invocation inside a systemd --user scope.
 # When the MemoryMax is exceeded, systemd OOM-kills the entire process tree.
 # ------------------------------------------------------------------------------
-MEM_GUARD ?= 6G
+MEM_GUARD ?=
 NOMEMGUARD ?=
 SYSTEMD_RUN := $(shell command -v systemd-run 2>/dev/null || true)
 # Only run the guard once
@@ -32,23 +32,18 @@ endif
 # fall back to a system scope when running as root. If neither is possible, skip with a warning.
 define RUN_UNDER_MEMGUARD
 @{ \
-echo "HERROO"; \
 echo $(SYSTEMD_RUN); \
 if [ -z "$(SYSTEMD_RUN)" ]; then \
-	echo "I am 1"; \
 	echo "==> [memguard] WARNING: systemd-run not found; proceeding WITHOUT memory limit."; \
 	exit 0; \
 fi; \
 USER_ID="$$(id -u)"; \
 SCOPE_ARGS="--user --scope"; \
 if [ "$$USER_ID" -eq 0 ]; then \
-	echo "I am 2"; \
 	SCOPE_ARGS="--scope"; \
 else \
-	echo "I am 3"; \
 	if ! systemctl --user show-environment >/dev/null 2>&1; then \
 		echo "==> [memguard] No user systemd session found (no DBus)."; \
-		echo "==> [memguard] TIP: run without sudo, or enable a user session (loginctl enable-linger ${USER})."; \
 		if ! $(SYSTEMD_RUN) --user --scope /bin/true >/dev/null 2>&1; then \
 			echo "==> [memguard] Skipping memory guard (no user systemd bus)."; \
 			exit 0; \
